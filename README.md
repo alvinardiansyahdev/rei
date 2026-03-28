@@ -2,7 +2,17 @@
 
 > *"Aku selalu mengawasi market untukmu."*
 
-![Rei Banner](assets/logo.png)
+<p align="center">
+  <img src="assets/logo.png" alt="Rei Logo" width="160"/>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Binance-Futures-F0B90B?style=for-the-badge&logo=binance&logoColor=black"/>
+  <img src="https://img.shields.io/badge/Copy_Trading-Monitor-00C896?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge"/>
+</p>
 
 Rei adalah bot Telegram untuk monitoring Binance Copy Trading Futures secara real-time. Dibangun dengan Python, Rei mengirimkan notifikasi otomatis dan daily summary langsung ke Telegram kamu.
 
