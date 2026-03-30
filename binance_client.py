@@ -28,14 +28,6 @@ async def _get(session: aiohttp.ClientSession, base: str, path: str, params: dic
         return data
 
 
-async def get_positions(session: aiohttp.ClientSession) -> list:
-    """Ambil semua posisi futures aktif (copy trading posisi masuk di sini)."""
-    data = await _get(session, FAPI_URL, "/fapi/v3/positionRisk")
-    if not isinstance(data, list):
-        return []
-    return [p for p in data if float(p.get("positionAmt", 0)) != 0]
-
-
 async def get_wallet_balance(session: aiohttp.ClientSession) -> list:
     """Ambil semua wallet balance dalam USDT."""
     data = await _get(session, SAPI_URL, "/sapi/v1/asset/wallet/balance", {"quoteAsset": "USDT"})
@@ -49,3 +41,27 @@ async def get_copy_trading_balance(session: aiohttp.ClientSession) -> float:
         if "copy" in w.get("walletName", "").lower():
             return float(w.get("balance", 0))
     return 0.0
+
+
+async def get_recent_income(session: aiohttp.ClientSession, since_ts: int) -> list:
+    """
+    Ambil income history (REALIZED_PNL) sejak timestamp tertentu.
+    Digunakan untuk mendeteksi trade yang baru selesai.
+    Setiap entry = 1 trade closed.
+    """
+    params = {
+        "incomeType": "REALIZED_PNL",
+        "startTime": since_ts,
+        "limit": 100,
+    }
+    data = await _get(session, FAPI_URL, "/fapi/v1/income", params)
+    return data if isinstance(data, list) else []
+
+
+async def get_today_income(session: aiohttp.ClientSession) -> list:
+    """Ambil semua REALIZED_PNL hari ini (mulai dari 00:00 UTC)."""
+    today_start = datetime.datetime.utcnow().replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    start_ts = int(today_start.timestamp() * 1000)
+    return await get_recent_income(session, start_ts)

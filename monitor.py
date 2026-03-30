@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 import aiohttp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -26,69 +27,51 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 # ─────────────────────────────────────────────
 # State in-memory
 # ─────────────────────────────────────────────
-_known_positions: dict[str, dict] = {}
-_daily_stats     = {"opened": 0, "closed": 0, "win": 0, "loss": 0}
-_drawdown_alerted: set[str] = set()
-_last_update_id: int = 0
-
-# Tracking balance harian untuk hitung PnL
+_last_update_id: int  = 0
 _day_start_balance: float = 0.0
 
+# Set of trade IDs yang sudah pernah dinotifkan
+# Key: tranId dari income entry
+_seen_trade_ids: set[str] = set()
 
-def _pos_key(pos: dict) -> str:
-    return f"{pos['symbol']}_{pos.get('positionSide', 'BOTH')}"
+# Timestamp terakhir kita cek income (untuk query incremental)
+_last_income_check_ts: int = 0
 
 
 # ─────────────────────────────────────────────
-# Monitor posisi
+# Monitor trade via income history
 # ─────────────────────────────────────────────
 
-async def check_positions(session: aiohttp.ClientSession):
-    global _known_positions
+async def check_new_trades(session: aiohttp.ClientSession):
+    """
+    Poll income history sejak _last_income_check_ts.
+    Setiap entry REALIZED_PNL baru = ada trade yang selesai → kirim notif.
+    """
+    global _seen_trade_ids, _last_income_check_ts
+
     try:
-        positions = await bc.get_positions(session)
+        # Query sejak 1 menit sebelum last check sebagai buffer
+        since = max(0, _last_income_check_ts - 60_000)
+        entries = await bc.get_recent_income(session, since_ts=since)
     except Exception as e:
-        log.error(f"Gagal fetch posisi: {e}")
+        log.error(f"Gagal fetch income: {e}")
         return
 
-    current = {_pos_key(p): p for p in positions}
+    now_ts = int(time.time() * 1000)
 
-    # Posisi baru dibuka
-    for key, pos in current.items():
-        if key not in _known_positions:
-            log.info(f"Posisi baru dibuka: {key}")
-            _daily_stats["opened"] += 1
-            await tg.send_message(session, tg.fmt_position_opened(pos))
+    for entry in entries:
+        tran_id = str(entry.get("tranId", ""))
+        if not tran_id or tran_id in _seen_trade_ids:
+            continue
 
-    # Posisi ditutup
-    for key, pos in list(_known_positions.items()):
-        if key not in current:
-            log.info(f"Posisi ditutup: {key}")
-            realized = float(pos.get("unRealizedProfit", 0))
-            _daily_stats["closed"] += 1
-            if realized >= 0:
-                _daily_stats["win"] += 1
-            else:
-                _daily_stats["loss"] += 1
-            await tg.send_message(session, tg.fmt_position_closed(pos, realized))
-            _drawdown_alerted.discard(key)
+        # Entry baru yang belum pernah dinotif
+        _seen_trade_ids.add(tran_id)
+        pnl = float(entry.get("income", 0))
+        symbol = entry.get("symbol", "?")
+        log.info(f"Trade baru terdeteksi: {symbol} PnL={pnl:.4f} USDT (tranId={tran_id})")
+        await tg.send_message(session, tg.fmt_trade_closed(entry))
 
-    # Cek drawdown
-    for key, pos in current.items():
-        try:
-            unrealized     = float(pos.get("unRealizedProfit", 0))
-            initial_margin = float(pos.get("initialMargin", 0)) or float(pos.get("isolatedMargin", 0))
-            if initial_margin > 0 and unrealized < 0:
-                drawdown_pct = abs(unrealized / initial_margin * 100)
-                if drawdown_pct >= DRAWDOWN_ALERT_PERCENT and key not in _drawdown_alerted:
-                    await tg.send_message(session, tg.fmt_drawdown_alert(pos["symbol"], drawdown_pct))
-                    _drawdown_alerted.add(key)
-                elif drawdown_pct < DRAWDOWN_ALERT_PERCENT:
-                    _drawdown_alerted.discard(key)
-        except (ValueError, ZeroDivisionError):
-            pass
-
-    _known_positions = current
+    _last_income_check_ts = now_ts
 
 
 # ─────────────────────────────────────────────
@@ -99,25 +82,21 @@ async def send_daily_summary(session: aiohttp.ClientSession):
     global _day_start_balance
 
     try:
-        ct_balance = await bc.get_copy_trading_balance(session)
+        ct_balance   = await bc.get_copy_trading_balance(session)
+        today_income = await bc.get_today_income(session)
     except Exception as e:
-        log.error(f"Error ambil balance untuk daily summary: {e}")
-        ct_balance = 0.0
+        log.error(f"Error daily summary: {e}")
+        return
 
     await tg.send_message(session, tg.fmt_daily_summary(
         ct_balance=ct_balance,
         day_start_balance=_day_start_balance,
-        positions_opened=_daily_stats["opened"],
-        positions_closed=_daily_stats["closed"],
-        win=_daily_stats["win"],
-        loss=_daily_stats["loss"],
+        today_income=today_income,
     ))
-    log.info(f"Daily summary terkirim. PnL hari ini: {ct_balance - _day_start_balance:.2f} USDT")
+    log.info("Daily summary terkirim.")
 
-    # Reset untuk hari berikutnya
+    # Reset baseline untuk hari berikutnya
     _day_start_balance = ct_balance
-    for key in _daily_stats:
-        _daily_stats[key] = 0
 
 
 # ─────────────────────────────────────────────
@@ -129,16 +108,17 @@ async def handle_command(session: aiohttp.ClientSession, command: str):
 
     if command == "/status":
         try:
-            positions = await bc.get_positions(session)
-            await tg.send_message(session, tg.fmt_status(positions))
+            ct_balance   = await bc.get_copy_trading_balance(session)
+            today_income = await bc.get_today_income(session)
+            await tg.send_message(session, tg.fmt_status(today_income, ct_balance))
         except Exception as e:
-            await tg.send_message(session, f"❌ Gagal ambil posisi: {e}")
+            await tg.send_message(session, f"❌ Gagal ambil status: {e}")
 
     elif command == "/balance":
         try:
-            ct_balance = await bc.get_copy_trading_balance(session)
-            positions  = await bc.get_positions(session)
-            await tg.send_message(session, tg.fmt_balance(ct_balance, positions))
+            ct_balance   = await bc.get_copy_trading_balance(session)
+            today_income = await bc.get_today_income(session)
+            await tg.send_message(session, tg.fmt_balance(ct_balance, today_income))
         except Exception as e:
             await tg.send_message(session, f"❌ Gagal ambil balance: {e}")
 
@@ -194,17 +174,28 @@ async def poll_telegram_commands(session: aiohttp.ClientSession):
 # ─────────────────────────────────────────────
 
 async def main():
-    global _day_start_balance
+    global _day_start_balance, _last_income_check_ts, _seen_trade_ids
 
     log.info("Rei aktif — monitoring copy trading futures...")
     async with aiohttp.ClientSession() as session:
 
-        # Ambil balance awal sebagai baseline harian
+        # Balance awal sebagai baseline harian
         try:
             _day_start_balance = await bc.get_copy_trading_balance(session)
-            log.info(f"Balance awal hari: {_day_start_balance:.2f} USDT")
+            log.info(f"Balance awal: {_day_start_balance:.2f} USDT")
         except Exception as e:
             log.error(f"Gagal ambil balance awal: {e}")
+
+        # Snapshot income yang sudah ada SEBELUM Rei start
+        # → cegah notif spam untuk trade yang sudah lama
+        try:
+            existing = await bc.get_today_income(session)
+            _seen_trade_ids = {str(e.get("tranId", "")) for e in existing}
+            _last_income_check_ts = int(time.time() * 1000)
+            log.info(f"Snapshot income awal: {len(_seen_trade_ids)} trade sudah ada hari ini.")
+        except Exception as e:
+            log.error(f"Gagal snapshot income awal: {e}")
+            _last_income_check_ts = int(time.time() * 1000)
 
         await tg.send_message(
             session,
@@ -226,14 +217,6 @@ async def main():
         )
         scheduler.start()
 
-        # Snapshot posisi awal (tanpa notifikasi)
-        try:
-            initial = await bc.get_positions(session)
-            _known_positions.update({_pos_key(p): p for p in initial})
-            log.info(f"Snapshot awal: {len(initial)} posisi aktif.")
-        except Exception as e:
-            log.error(f"Gagal snapshot awal: {e}")
-
         # Loop utama
         monitor_counter = 0
         while True:
@@ -241,7 +224,7 @@ async def main():
 
             monitor_counter += 1
             if monitor_counter >= POLL_INTERVAL_SECONDS:
-                await check_positions(session)
+                await check_new_trades(session)
                 monitor_counter = 0
 
             await asyncio.sleep(1)

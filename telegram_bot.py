@@ -19,37 +19,26 @@ async def send_message(session: aiohttp.ClientSession, text: str, parse_mode: st
 # Notifikasi otomatis
 # ─────────────────────────────────────────────
 
-def fmt_position_opened(pos: dict) -> str:
-    symbol   = pos.get("symbol", "?")
-    side     = pos.get("positionSide", "?")
-    size     = pos.get("positionAmt", "?")
-    entry    = float(pos.get("entryPrice", 0))
-    liq      = float(pos.get("liquidationPrice", 0))
-    leverage = pos.get("leverage", "?")
-    side_emoji = "🟢" if str(side).upper() == "LONG" else "🔴" if str(side).upper() == "SHORT" else "🟡"
-    return (
-        f"{side_emoji} <b>POSISI BARU DIBUKA</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"📌 Symbol     : <b>{symbol}</b>\n"
-        f"📊 Side       : <b>{side}</b>\n"
-        f"📦 Size       : {size}\n"
-        f"💰 Entry      : {entry:,.4f} USDT\n"
-        f"⚡ Leverage   : {leverage}x\n"
-        f"💀 Liquidasi  : {liq:,.4f} USDT"
-    )
-
-
-def fmt_position_closed(pos: dict, pnl: float) -> str:
-    symbol = pos.get("symbol", "?")
-    side   = pos.get("positionSide", "?")
+def fmt_trade_closed(income: dict) -> str:
+    """Notifikasi dari income history — trade selesai."""
+    symbol   = income.get("symbol", "?")
+    pnl      = float(income.get("income", 0))
+    trade_id = income.get("tradeId", "-")
+    ts       = income.get("time", 0)
     pnl_emoji = "✅" if pnl >= 0 else "❌"
     pnl_sign  = "+" if pnl >= 0 else ""
+
+    # Format timestamp ke jam:menit
+    import datetime
+    dt = datetime.datetime.utcfromtimestamp(ts / 1000).strftime("%H:%M UTC")
+
     return (
-        f"{pnl_emoji} <b>POSISI DITUTUP</b>\n"
+        f"{pnl_emoji} <b>TRADE SELESAI</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📌 Symbol     : <b>{symbol}</b>\n"
-        f"📊 Side       : <b>{side}</b>\n"
-        f"💵 Est. PnL   : <b>{pnl_sign}{pnl:.2f} USDT</b>"
+        f"💵 Realized PnL : <b>{pnl_sign}{pnl:.4f} USDT</b>\n"
+        f"🕐 Waktu      : {dt}\n"
+        f"🔖 Trade ID   : {trade_id}"
     )
 
 
@@ -67,47 +56,22 @@ def fmt_drawdown_alert(symbol: str, drawdown_pct: float) -> str:
 # Command: /balance
 # ─────────────────────────────────────────────
 
-def fmt_balance(ct_balance: float, positions: list) -> str:
-    # Hitung total unrealized PnL dari posisi aktif
-    total_unrealized = sum(float(p.get("unRealizedProfit", 0)) for p in positions)
-    equity = ct_balance + total_unrealized
-    pnl_sign  = "+" if total_unrealized >= 0 else ""
-    pnl_emoji = "📈" if total_unrealized >= 0 else "📉"
-
-    pos_info = f"{len(positions)} posisi aktif" if positions else "Tidak ada posisi aktif"
+def fmt_balance(ct_balance: float, today_income: list) -> str:
+    total_unrealized = 0.0  # tidak bisa lihat posisi aktif copy trading
+    today_pnl = sum(float(i.get("income", 0)) for i in today_income)
+    trade_count = len(today_income)
+    win  = sum(1 for i in today_income if float(i.get("income", 0)) >= 0)
+    loss = trade_count - win
+    pnl_sign  = "+" if today_pnl >= 0 else ""
+    pnl_emoji = "📈" if today_pnl >= 0 else "📉"
 
     return (
         f"💼 <b>SALDO COPY TRADING</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🗂 CT Balance    : <b>{ct_balance:.2f} USDT</b>\n"
-        f"🏦 Equity        : {equity:.2f} USDT\n"
-        f"{pnl_emoji} Unrealized PnL : <b>{pnl_sign}{total_unrealized:.2f} USDT</b>\n"
-        f"📊 Posisi        : {pos_info}"
-    )
-
-
-# ─────────────────────────────────────────────
-# Command: /report & daily summary
-# ─────────────────────────────────────────────
-
-def fmt_daily_summary(ct_balance: float, day_start_balance: float,
-                      positions_opened: int, positions_closed: int,
-                      win: int, loss: int) -> str:
-    # PnL hari ini = selisih balance sekarang vs awal hari
-    today_pnl = ct_balance - day_start_balance
-    pnl_emoji = "📈" if today_pnl >= 0 else "📉"
-    pnl_sign  = "+" if today_pnl >= 0 else ""
-    winrate   = (win / (win + loss) * 100) if (win + loss) > 0 else 0
-
-    return (
-        f"🌙 <b>REI — DAILY SUMMARY</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"{pnl_emoji} PnL Hari Ini   : <b>{pnl_sign}{today_pnl:.2f} USDT</b>\n"
-        f"💼 Balance Skrg  : <b>{ct_balance:.2f} USDT</b>\n"
-        f"📂 Dibuka        : {positions_opened} posisi\n"
-        f"📁 Ditutup       : {positions_closed} posisi\n"
-        f"✅ Win / ❌ Loss  : {win} / {loss}\n"
-        f"🎯 Win Rate      : {winrate:.1f}%"
+        f"🗂 CT Balance     : <b>{ct_balance:.2f} USDT</b>\n"
+        f"{pnl_emoji} PnL Hari Ini  : <b>{pnl_sign}{today_pnl:.4f} USDT</b>\n"
+        f"📊 Trade Hari Ini : {trade_count} trade\n"
+        f"✅ Win / ❌ Loss  : {win} / {loss}"
     )
 
 
@@ -115,32 +79,66 @@ def fmt_daily_summary(ct_balance: float, day_start_balance: float,
 # Command: /status
 # ─────────────────────────────────────────────
 
-def fmt_status(positions: list) -> str:
-    if not positions:
-        return "📭 <b>Tidak ada posisi aktif saat ini.</b>"
-
-    lines = [f"📊 <b>POSISI AKTIF</b> ({len(positions)} posisi)\n━━━━━━━━━━━━━━━━━━"]
-    for pos in positions:
-        symbol   = pos.get("symbol", "?")
-        side     = pos.get("positionSide", "?")
-        size     = pos.get("positionAmt", "?")
-        entry    = float(pos.get("entryPrice", 0))
-        unreal   = float(pos.get("unRealizedProfit", 0))
-        liq      = float(pos.get("liquidationPrice", 0))
-        leverage = pos.get("leverage", "?")
-        pnl_sign  = "+" if unreal >= 0 else ""
-        pnl_emoji = "🟢" if unreal >= 0 else "🔴"
-        side_emoji = "📈" if str(side).upper() == "LONG" else "📉"
-
-        lines.append(
-            f"\n{side_emoji} <b>{symbol}</b> [{side}]\n"
-            f"  📦 Size      : {size}\n"
-            f"  💰 Entry     : {entry:,.4f}\n"
-            f"  ⚡ Leverage  : {leverage}x\n"
-            f"  {pnl_emoji} Unreal PnL : <b>{pnl_sign}{unreal:.2f} USDT</b>\n"
-            f"  💀 Liquidasi : {liq:,.4f}"
+def fmt_status(today_income: list, ct_balance: float) -> str:
+    if not today_income:
+        return (
+            f"📭 <b>Belum ada trade hari ini.</b>\n"
+            f"💼 Balance : {ct_balance:.2f} USDT"
         )
+
+    today_pnl = sum(float(i.get("income", 0)) for i in today_income)
+    win  = sum(1 for i in today_income if float(i.get("income", 0)) >= 0)
+    loss = len(today_income) - win
+    pnl_sign  = "+" if today_pnl >= 0 else ""
+    pnl_emoji = "📈" if today_pnl >= 0 else "📉"
+
+    lines = [
+        f"📊 <b>STATUS HARI INI</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💼 Balance        : <b>{ct_balance:.2f} USDT</b>\n"
+        f"{pnl_emoji} Total PnL     : <b>{pnl_sign}{today_pnl:.4f} USDT</b>\n"
+        f"📋 Total Trade    : {len(today_income)}\n"
+        f"✅ Win / ❌ Loss  : {win} / {loss}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<b>History Trade:</b>"
+    ]
+
+    # Tampilkan max 10 trade terakhir
+    for i in today_income[-10:]:
+        symbol = i.get("symbol", "?")
+        pnl    = float(i.get("income", 0))
+        import datetime
+        dt     = datetime.datetime.utcfromtimestamp(i.get("time", 0) / 1000).strftime("%H:%M")
+        emoji  = "✅" if pnl >= 0 else "❌"
+        sign   = "+" if pnl >= 0 else ""
+        lines.append(f"{emoji} {symbol} {sign}{pnl:.4f} USDT ({dt})")
+
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# Command: /report & daily summary
+# ─────────────────────────────────────────────
+
+def fmt_daily_summary(ct_balance: float, day_start_balance: float,
+                      today_income: list) -> str:
+    today_pnl = sum(float(i.get("income", 0)) for i in today_income)
+    trade_count = len(today_income)
+    win  = sum(1 for i in today_income if float(i.get("income", 0)) >= 0)
+    loss = trade_count - win
+    winrate   = (win / trade_count * 100) if trade_count > 0 else 0
+    pnl_emoji = "📈" if today_pnl >= 0 else "📉"
+    pnl_sign  = "+" if today_pnl >= 0 else ""
+
+    return (
+        f"🌙 <b>REI — DAILY SUMMARY</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{pnl_emoji} PnL Hari Ini   : <b>{pnl_sign}{today_pnl:.4f} USDT</b>\n"
+        f"💼 Balance Skrg  : <b>{ct_balance:.2f} USDT</b>\n"
+        f"📋 Total Trade   : {trade_count}\n"
+        f"✅ Win / ❌ Loss  : {win} / {loss}\n"
+        f"🎯 Win Rate      : {winrate:.1f}%"
+    )
 
 
 # ─────────────────────────────────────────────
@@ -151,7 +149,7 @@ def fmt_help() -> str:
     return (
         f"🤖 <b>REI — Command List</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📊 /status   — Posisi copy trade aktif\n"
+        f"📊 /status   — Trade & PnL hari ini\n"
         f"💼 /balance  — Saldo copy trading wallet\n"
         f"📋 /report   — Daily report sekarang\n"
         f"❓ /help     — Tampilkan pesan ini"
